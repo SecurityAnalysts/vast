@@ -711,11 +711,11 @@ active_partition_actor::behavior_type active_partition(
       return rp;
     },
     [self](atom::status,
-           status_verbosity v) -> caf::typed_response_promise<caf::settings> {
+           status_verbosity v) -> caf::typed_response_promise<record> {
       struct extra_state {
         size_t memory_usage = 0;
-        void deliver(caf::typed_response_promise<caf::settings>&& promise,
-                     caf::settings&& content) {
+        void deliver(caf::typed_response_promise<record>&& promise,
+                     record&& content) {
           put(content, "memory-usage", memory_usage);
           promise.deliver(std::move(content));
         }
@@ -728,16 +728,18 @@ active_partition_actor::behavior_type active_partition(
       const auto timeout = defaults::system::initial_request_timeout / 5 * 3;
       indexer_states.reserve(self->state.indexers.size());
       for (auto& i : self->state.indexers) {
-        auto& ps = indexer_states.emplace_back().as_dictionary();
+        auto& ps = caf::get<record>(indexer_states.emplace_back(record{}));
         collect_status(
           rs, timeout, v, i.second,
-          [rs, v, &ps, &field = i.first](caf::settings& response) {
+          [rs, v, &ps, &field = i.first](record& response) {
             put(ps, "field", field.fqn());
-            if (auto s = caf::get_if<caf::config_value::integer>( //
-                  &response, "memory-usage"))
-              rs->memory_usage += *s;
+            auto it = response.find("memory-usage");
+            if (it != response.end()) {
+              if (const auto* s = caf::get_if<count>(&it->second))
+                rs->memory_usage += *s;
+            }
             if (v >= status_verbosity::debug)
-              detail::merge_settings(response, ps, policy::merge_lists::no);
+              merge(response, ps, policy::merge_lists::no);
           },
           [rs, &ps, &field = i.first](caf::error& err) {
             VAST_WARN("{} failed to retrieve status from {} : {}", *rs->self,
@@ -958,14 +960,13 @@ partition_actor::behavior_type passive_partition(
       return self->delegate(self->state.store, atom::erase_v,
                             std::move(all_ids));
     },
-    [self](atom::status,
-           status_verbosity /*v*/) -> caf::config_value::dictionary {
-      caf::settings result;
+    [self](atom::status, status_verbosity /*v*/) -> record {
+      record result;
       if (!self->state.partition_chunk) {
-        caf::put(result, "state", "waiting for chunk");
+        put(result, "state", "waiting for chunk");
         return result;
       }
-      caf::put(result, "size", self->state.partition_chunk->size());
+      put(result, "size", self->state.partition_chunk->size());
       size_t mem_indexers = 0;
       for (size_t i = 0; i < self->state.indexers.size(); ++i) {
         if (self->state.indexers[i])
@@ -976,17 +977,16 @@ partition_actor::behavior_type passive_partition(
                               ->data()
                               ->size();
       }
-      caf::put(result, "memory-usage-indexers", mem_indexers);
+      put(result, "memory-usage-indexers", mem_indexers);
       auto x = self->state.partition_chunk->incore();
       if (!x) {
-        caf::put(result, "memory-usage-incore", render(x.error()));
-        caf::put(result, "memory-usage",
-                 self->state.partition_chunk->size() + mem_indexers
-                   + sizeof(self->state));
+        put(result, "memory-usage-incore", render(x.error()));
+        put(result, "memory-usage",
+            self->state.partition_chunk->size() + mem_indexers
+              + sizeof(self->state));
       } else {
-        caf::put(result, "memory-usage-incore", *x);
-        caf::put(result, "memory-usage",
-                 *x + mem_indexers + sizeof(self->state));
+        put(result, "memory-usage-incore", *x);
+        put(result, "memory-usage", *x + mem_indexers + sizeof(self->state));
       }
       return result;
     },
